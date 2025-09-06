@@ -11,6 +11,9 @@ import stopsRoute from './routes/stops.js';
 import remindersRoute from './routes/reminders.js';
 import jobsRoute from './routes/jobs.js';
 import smsRoute from './routes/sms.js';
+import transitRoute from './routes/transit.js';
+import chatRoute from './routes/chat.js';
+
 
 export const app = express();
 
@@ -58,6 +61,9 @@ app.use('/api/stops', stopsRoute);
 app.use('/api/reminders', remindersRoute);
 app.use('/api/jobs', jobsRoute);
 app.use('/api/sms', smsRoute);
+app.use('/api/transit', transitRoute);
+app.use('/api/chat', chatRoute);
+
 
 export default app;
 

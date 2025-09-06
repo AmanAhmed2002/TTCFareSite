@@ -6,13 +6,8 @@ export default function NavBar() {
 
   useEffect(() => {
     const el = document.documentElement;
-    if (dark) {
-      el.classList.add('dark');
-      localStorage.setItem('theme', 'dark');
-    } else {
-      el.classList.remove('dark');
-      localStorage.setItem('theme', 'light');
-    }
+    if (dark) { el.classList.add('dark'); localStorage.setItem('theme', 'dark'); }
+    else { el.classList.remove('dark'); localStorage.setItem('theme', 'light'); }
   }, [dark]);
 
   const linkCls = (isActive) =>
@@ -21,9 +16,7 @@ export default function NavBar() {
       'text-slate-700 dark:text-slate-100',
       'hover:bg-slate-100 dark:hover:bg-slate-800',
       isActive ? 'bg-brand-600 text-white hover:bg-brand-600' : '',
-    ]
-      .filter(Boolean)
-      .join(' ');
+    ].filter(Boolean).join(' ');
 
   return (
     <header className="sticky top-0 z-40 border-b bg-white/95 text-slate-900 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/75 dark:border-slate-700/60 dark:bg-slate-900/90 dark:text-slate-100">
@@ -36,15 +29,11 @@ export default function NavBar() {
         <nav className="flex items-center gap-1">
           <NavLink to="/" end className={({ isActive }) => linkCls(isActive)}>Home</NavLink>
           <NavLink to="/tool" className={({ isActive }) => linkCls(isActive)}>Open the Tool</NavLink>
+          <NavLink to="/chat" className={({ isActive }) => linkCls(isActive)}>Transit Chat</NavLink>
           <NavLink to="/install" className={({ isActive }) => linkCls(isActive)}>Install app</NavLink>
-
-          <button
-            type="button"
-            className="inline-flex items-center rounded-xl px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800 transition-colors"
-            onClick={() => setDark((d) => !d)}
-            aria-pressed={dark}
-            title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
-          >
+          <button type="button" className="inline-flex items-center rounded-xl px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800 transition-colors"
+            onClick={() => setDark((d) => !d)} aria-pressed={dark}
+            title={dark ? 'Switch to light mode' : 'Switch to dark mode'}>
             {dark ? 'Light mode' : 'Dark mode'}
           </button>
         </nav>

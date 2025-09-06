@@ -4,6 +4,7 @@ import Footer from './components/footer.jsx';
 import Home from './pages/Home.jsx';
 import Tool from './pages/Tool.jsx';
 import Install from './pages/Install.jsx';
+import Chat from './pages/Chat.jsx'; // NEW
 
 function NotFound() {
   return (
@@ -24,6 +25,7 @@ export default function AppShell() {
             <Route path="/" element={<Home />} />
             <Route path="/tool" element={<Tool />} />
             <Route path="/install" element={<Install />} />
+            <Route path="/chat" element={<Chat />} /> {/* NEW */}
             <Route path="*" element={<NotFound />} />
           </Routes>
         </main>
