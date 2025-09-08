@@ -1,105 +1,65 @@
 // backend/src/lib/stopResolver.js
 import { getPool } from '../db.js';
+import { openTtcSqlite, isSqliteReady } from './sqlite.js';
+
+// Heuristic: if it looks like a raw GTFS stop_id, just return it.
+function looksLikeId(s) {
+  return /^[A-Za-z0-9_-]+$/.test(String(s || '').trim());
+}
 
 /**
- * If stopRef looks like an exact id (digits/alnum), return it directly.
- * Otherwise, try to find a matching stop_id by name (returns the first best match).
+ * Find candidate stop ids by name for a given agency.
+ * Returns array of { id, name } sorted by relevance.
+ * Order of attempts:
+ *   1) Postgres (Neon) if configured
+ *   2) TTC-only: SQLite stops table (file-backed, low-RAM)
  */
-export async function getStopId(agencyKey, stopRef) {
-  if (!stopRef) return null;
-  const s = String(stopRef).trim();
+export async function findCandidateStopIds(agencyKey, stopRef, { limit = 10 } = {}) {
+  if (!stopRef) return [];
+  const q = String(stopRef).trim();
+  if (looksLikeId(q)) return [{ id: q, name: q }];
 
-  // Basic "it looks like an id" heuristic
-  if (/^[A-Za-z0-9_-]+$/.test(s)) return s;
+  const agency = String(agencyKey || '').toLowerCase();
 
+  // (1) Try your Postgres 'stops' table if available
   const pool = getPool();
-  if (!pool) return null;
-
-  const { rows } = await pool.query(
-    `
-    SELECT id
-    FROM stops
-    WHERE agency = $1 AND name ILIKE $2
-    ORDER BY name ASC
-    LIMIT 1
-    `,
-    [String(agencyKey).toUpperCase(), `%${s}%`]
-  );
-  return rows[0]?.id || null;
-}
-
-/**
- * Tokenize the free-text stop name to help disambiguate.
- * We look for "station/stn/subway", "go", "terminal/loop", and street-type tokens.
- */
-function extractTokens(q) {
-  const t = String(q || '').toLowerCase();
-  const has = (re) => re.test(t);
-  return {
-    station: has(/\b(station|stn|subway)\b/),
-    go: has(/\bgo\b/),
-    terminal: has(/\b(terminal|loop|exchange)\b/),
-    street: has(/\b(st|street|rd|road|ave|avenue|blvd|boulevard|dr|drive|ct|court|cres|crescent)\b/),
-  };
-}
-
-function nameHasAnyToken(name, tok) {
-  const s = String(name || '').toLowerCase();
-  if (tok.station && /\b(station|stn|subway)\b/.test(s)) return true;
-  if (tok.go && /\bgo\b/.test(s)) return true;
-  if (tok.terminal && /\b(terminal|loop|exchange)\b/.test(s)) return true;
-  if (tok.street && /\b(st|street|rd|road|ave|avenue|blvd|boulevard|dr|drive|ct|court|cres|crescent)\b/.test(s)) return true;
-  return false;
-}
-
-/**
- * Return up to `max` candidate stop_ids matching the name for this agency.
- * Applies token-aware filtering so "Warden Station" does not match "Warden Ave".
- */
-export async function findCandidateStopIds(agencyKey, nameLike, max = 12) {
-  const q = String(nameLike || '').trim();
-  if (!q) return [];
-
-  const pool = getPool();
-  if (!pool) return [];
-
-  const sql = `
-    SELECT id, name
-    FROM stops
-    WHERE agency = $1 AND name ILIKE $2
-    ORDER BY name ASC
-    LIMIT $3
-  `;
-  const { rows } = await pool.query(sql, [
-    String(agencyKey).toUpperCase(),
-    `%${q}%`,
-    Math.max(1, Math.min(50, max)),
-  ]);
-
-  if (!rows?.length) return [];
-
-  // Apply token filters only if the query clearly indicates a type
-  const tok = extractTokens(q);
-  const wantsType =
-    tok.station || tok.go || tok.terminal || tok.street;
-
-  let filtered = rows;
-  if (wantsType) {
-    const f = rows.filter(r => nameHasAnyToken(r.name, tok));
-    if (f.length) filtered = f;
+  if (pool) {
+    const { rows } = await pool.query(
+      `SELECT id, name
+       FROM stops
+       WHERE agency = $1 AND name ILIKE $2
+       ORDER BY name ASC
+       LIMIT $3`,
+      [agency, `%${q}%`, Math.max(1, limit)]
+    );
+    if (rows?.length) return rows.map(r => ({ id: r.id, name: r.name }));
   }
 
-  // Final pass: prioritize those with all query words present (loose)
-  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  filtered.sort((a, b) => {
-    const as = a.name.toLowerCase();
-    const bs = b.name.toLowerCase();
-    const ac = words.reduce((n,w)=> n + (as.includes(w)?1:0), 0);
-    const bc = words.reduce((n,w)=> n + (bs.includes(w)?1:0), 0);
-    if (ac !== bc) return bc - ac;
-    return String(a.name).localeCompare(String(b.name));
-  });
+  // (2) TTC fallback via SQLite (file-backed) if ready
+  if (agency === 'ttc' && isSqliteReady()) {
+    const db = await openTtcSqlite();
 
-  return filtered.map(r => ({ id: r.id, name: r.name }));
+    // Simple token LIKE match; prefer station rows (location_type=1)
+    const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const like = `%${tokens.join('%')}%`;
+
+    const rows = db.prepare(
+      `SELECT stop_id AS id, stop_name AS name, location_type
+       FROM stops
+       WHERE lower(stop_name) LIKE ?
+       ORDER BY (CASE WHEN location_type = 1 THEN 0 ELSE 1 END), stop_name
+       LIMIT ?`
+    ).all(like, Math.max(1, limit));
+
+    if (rows?.length) return rows.map(r => ({ id: String(r.id), name: r.name }));
+  }
+
+  return [];
+}
+
+/** Single best stop id or null. */
+export async function getStopId(agencyKey, stopRef) {
+  const cands = await findCandidateStopIds(agencyKey, stopRef, { limit: 1 });
+  return cands[0]?.id || null;
 }
 
