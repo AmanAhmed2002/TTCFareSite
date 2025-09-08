@@ -4,6 +4,10 @@ import { PORT } from './config.js';
 import { app } from './app.js';
 // Import the jobs module as a namespace to avoid bare-identifier issues
 import * as Jobs from './routes/jobs.js';
+import { primeSQLite } from './lib/sqlite.js';
+primeSQLite();
+
+
 
 app.listen(PORT, () => {
   console.log(`API listening on http://localhost:${PORT}`);

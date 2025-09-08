@@ -2,7 +2,7 @@
 import GtfsRT from 'gtfs-realtime-bindings';
 const TransitRealtime = GtfsRT.transit_realtime;
 
-// Tiny in-memory cache per URL (reduces repeated decode churn)
+// Tiny cache to avoid decoding the same feed repeatedly within a few seconds
 const RT_CACHE = new Map();
 
 export async function fetchRT(url, { timeoutMs = 8000, ttlMs = Number(process.env.RT_CACHE_TTL_MS || 5000) } = {}) {
@@ -25,7 +25,6 @@ export async function fetchRT(url, { timeoutMs = 8000, ttlMs = Number(process.en
   }
 }
 
-// Default stopId matcher: exact
 export function defaultStopMatcher(rtStopId, targetStopId) {
   return String(rtStopId) === String(targetStopId);
 }
