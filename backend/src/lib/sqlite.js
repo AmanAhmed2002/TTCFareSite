@@ -1,54 +1,54 @@
-// backend/src/lib/sqlite.js
+// src/lib/sqlite.js
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import Database from 'better-sqlite3';
-
-// small helpers for streaming fallback
 import unzipper from 'unzipper';
 import { parse } from 'csv-parse';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 
-const SQLITE_URL = process.env.TTC_SQLITE_URL || '';
+// ---------- env & TTLs ----------
+const SQLITE_URL   = process.env.TTC_SQLITE_URL || '';
 const GTFS_ZIP_URL = process.env.TTC_GTFS_STATIC_URL || '';
-const TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const TTL_SQLITE_MS = 24 * 60 * 60 * 1000; // 24h
+const TTL_ZIP_MS    = 6  * 60 * 60 * 1000; // 6h
 
+// ---------- state ----------
 let DB = null;
 let sqliteReady = false;
 
+// ---------- small utils ----------
 const sha12 = (s) => crypto.createHash('sha1').update(String(s)).digest('hex').slice(0,12);
-const sqliteFile = (url) => path.join(os.tmpdir(), `ttc-${sha12(url)}.sqlite`);
+const sqlitePathFor = (url) => path.join(os.tmpdir(), `ttc-${sha12(url)}.sqlite`);
+const zipPathFor    = (url) => path.join(os.tmpdir(), `ttc-gtfs-${sha12(url)}.zip`);
 
-// ---------- download & open ----------
-
-async function streamToFile(readable, filename) {
-  return new Promise((resolve, reject) => {
-    const w = fs.createWriteStream(filename);
-    readable.pipe(w);
-    readable.on('error', reject);
-    w.on('finish', resolve);
-    w.on('error', reject);
-  });
+async function streamHttpToFile(res, filePath) {
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.downloading`;
+  const nodeReadable = Readable.fromWeb(res.body);
+  await pipeline(nodeReadable, fs.createWriteStream(tmp));
+  fs.renameSync(tmp, filePath);
 }
 
+// ---------- ensure local SQLite file (no buffering) ----------
 async function ensureSqliteLocal() {
   if (!SQLITE_URL) throw new Error('TTC_SQLITE_URL not set');
-  const file = sqliteFile(SQLITE_URL);
+  const file = sqlitePathFor(SQLITE_URL);
   try {
     const st = fs.statSync(file);
-    if (st.size > 0 && (Date.now() - st.mtimeMs) < TTL_MS) return file;
+    if (st.size > 0 && (Date.now() - st.mtimeMs) < TTL_SQLITE_MS) return file;
   } catch {}
   console.log(`[ttc-sqlite] downloading: ${SQLITE_URL}`);
   const res = await fetch(SQLITE_URL, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`download sqlite failed: ${res.status}`);
-  const tmp = `${file}.downloading`;
-  await fs.promises.mkdir(path.dirname(file), { recursive: true });
-  await streamToFile(res.body, tmp);
-  fs.renameSync(tmp, file);
+  if (!res.ok || !res.body) throw new Error(`download sqlite failed: ${res.status}`);
+  await streamHttpToFile(res, file);
   console.log(`[ttc-sqlite] saved → ${file}`);
   return file;
 }
 
+// ---------- public: open sqlite (file-backed, low RAM) ----------
 export async function openTtcSqlite() {
   if (DB) return DB;
   const file = await ensureSqliteLocal();
@@ -62,7 +62,7 @@ export function isSqliteReady() {
   return sqliteReady;
 }
 
-// Background prefetch at boot (non-blocking)
+// Kick off background download/open at boot (non-blocking)
 export async function primeSQLite() {
   try {
     await openTtcSqlite();
@@ -72,7 +72,6 @@ export async function primeSQLite() {
 }
 
 // ---------- tiny queries used by adapters/schedule ----------
-
 export function expandStationStopIds(db, stopId) {
   const row = db.prepare('SELECT location_type FROM stops WHERE stop_id = ?').get(String(stopId));
   if (row && Number(row.location_type) === 1) {
@@ -96,7 +95,8 @@ export function mapTripIdsToRouteShort(db, tripIds) {
 
 export function routeShortNamesForRouteIds(db, routeIds) {
   if (!routeIds.length) return new Map();
-  const q = `SELECT route_id, route_short_name, route_long_name FROM routes WHERE route_id IN (${routeIds.map(()=>'?').join(',')})`;
+  const q = `SELECT route_id, route_short_name, route_long_name
+             FROM routes WHERE route_id IN (${routeIds.map(()=>'?').join(',')})`;
   const m = new Map();
   for (const r of db.prepare(q).all(...routeIds)) {
     m.set(String(r.route_id), (r.route_short_name || r.route_long_name || '').trim());
@@ -104,19 +104,31 @@ export function routeShortNamesForRouteIds(db, routeIds) {
   return m;
 }
 
-// ---------- lightweight FALLBACKS when SQLite isn't ready yet ----------
-
-async function openZipEntry(entry) {
+// ---------- GTFS zip: cache to /tmp and stream entries (no buffering) ----------
+async function ensureZipLocal() {
   if (!GTFS_ZIP_URL) throw new Error('TTC_GTFS_STATIC_URL not set');
+  const file = zipPathFor(GTFS_ZIP_URL);
+  try {
+    const st = fs.statSync(file);
+    if (st.size > 0 && (Date.now() - st.mtimeMs) < TTL_ZIP_MS) return file;
+  } catch {}
+  console.log(`[ttc-gtfszip] downloading: ${GTFS_ZIP_URL}`);
   const res = await fetch(GTFS_ZIP_URL, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`gtfs zip fetch failed: ${res.status}`);
-  const dir = await unzipper.Open.buffer(Buffer.from(await res.arrayBuffer()));
-  const f = dir.files.find(x => x.path.toLowerCase() === entry.toLowerCase());
-  if (!f) throw new Error(`${entry} not found in GTFS zip`);
-  return f.stream();
+  if (!res.ok || !res.body) throw new Error(`gtfs zip fetch failed: ${res.status}`);
+  await streamHttpToFile(res, file);
+  console.log(`[ttc-gtfszip] saved → ${file}`);
+  return file;
 }
 
-// Build a Map(route_id -> route_short_name) by streaming routes.txt
+async function openZipEntry(entryName) {
+  const zipFile = await ensureZipLocal();
+  const dir = await unzipper.Open.file(zipFile);
+  const ent = dir.files.find(f => f.path.toLowerCase() === entryName.toLowerCase());
+  if (!ent) throw new Error(`${entryName} not found in GTFS zip`);
+  return ent.stream();
+}
+
+// Build Map(route_id → short_name) by streaming routes.txt
 export async function loadRoutesMapFromZip() {
   const map = new Map();
   const s = await openZipEntry('routes.txt');
@@ -136,9 +148,9 @@ export async function loadRoutesMapFromZip() {
 
 // Expand station to platform ids by streaming stops.txt
 export async function expandStationFromZip(stopId) {
-  const kids = [];
   const id = String(stopId);
-  let thisIsStation = false;
+  let isStation = false;
+  const kids = [];
 
   const s = await openZipEntry('stops.txt');
   await new Promise((resolve, reject) => {
@@ -149,14 +161,14 @@ export async function expandStationFromZip(stopId) {
       if (!sid) return;
       const lt = Number(r.location_type || 0);
       const parent = String(r.parent_station || '').trim();
-      if (sid === id && lt === 1) thisIsStation = true;
+      if (sid === id && lt === 1) isStation = true;
       if (parent === id) kids.push(sid);
     });
     parser.on('error', reject);
     parser.on('end', resolve);
   });
 
-  if (thisIsStation && kids.length) return kids;
+  if (isStation && kids.length) return kids;
   return [id];
 }
 
