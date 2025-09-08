@@ -1,6 +1,6 @@
 // src/lib/adapters/ttc.js
 import { fetchRT, defaultStopMatcher } from './base.js';
-import { openTtcSqlite, isSqliteReady, mapTripIdsToRouteShort, loadRoutesMapFromZip } from '../lib/sqlite.js';
+import { openTtcSqlite, isSqliteReady, mapTripIdsToRouteShort, loadRoutesMapFromZip } from '../sqlite.js';
 
 const urls = {
   vehicles: process.env.TTC_RT_VEHICLES || 'https://bustime.ttc.ca/gtfsrt/vehicles',
