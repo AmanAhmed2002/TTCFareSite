@@ -9,46 +9,148 @@ import { parse } from 'csv-parse';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 
-// ---------- env & TTLs ----------
 const SQLITE_URL   = process.env.TTC_SQLITE_URL || '';
 const GTFS_ZIP_URL = process.env.TTC_GTFS_STATIC_URL || '';
-const TTL_SQLITE_MS = 24 * 60 * 60 * 1000; // 24h
-const TTL_ZIP_MS    = 6  * 60 * 60 * 1000; // 6h
 
-// ---------- state ----------
+const TTL_SQLITE_MS = 24 * 60 * 60 * 1000; // 24h cache
+const TTL_ZIP_MS    = 6  * 60 * 60 * 1000; // 6h cache
+const SQLITE_RETRY_DELAY_MS = 60_000;      // 60s between retries
+
 let DB = null;
 let sqliteReady = false;
 
-// ---------- small utils ----------
 const sha12 = (s) => crypto.createHash('sha1').update(String(s)).digest('hex').slice(0,12);
 const sqlitePathFor = (url) => path.join(os.tmpdir(), `ttc-${sha12(url)}.sqlite`);
 const zipPathFor    = (url) => path.join(os.tmpdir(), `ttc-gtfs-${sha12(url)}.zip`);
 
-async function streamHttpToFile(res, filePath) {
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.downloading`;
-  const nodeReadable = Readable.fromWeb(res.body);
-  await pipeline(nodeReadable, fs.createWriteStream(tmp));
-  fs.renameSync(tmp, filePath);
+/* --------------------- robust HTTP download helpers --------------------- */
+
+async function httpHeadSize(url) {
+  // Ask for the first byte to elicit Content-Range: bytes 0-0/NNN (works behind redirects)
+  const res = await fetch(url, { redirect: 'follow', headers: { Range: 'bytes=0-0' } });
+  if (res.status === 206) {
+    const cr = res.headers.get('content-range'); // e.g. "bytes 0-0/905793536"
+    const total = cr && Number(cr.split('/')[1]);
+    if (Number.isFinite(total)) return total;
+  }
+  // Fallback: plain GET headers
+  const res2 = await fetch(url, { redirect: 'follow', method: 'HEAD' });
+  const len = Number(res2.headers.get('content-length'));
+  return Number.isFinite(len) ? len : null;
 }
 
-// ---------- ensure local SQLite file (no buffering) ----------
+async function streamToFileAppend(res, filePath, flags = 'a') {
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.part`;
+  const nodeReadable = Readable.fromWeb(res.body);
+  await pipeline(nodeReadable, fs.createWriteStream(tmp, { flags }));
+  // Append tmp → final (atomic rename for append is not safe, do append manually)
+  const dest = fs.createWriteStream(filePath, { flags: 'a' });
+  await pipeline(fs.createReadStream(tmp), dest);
+  fs.unlinkSync(tmp);
+}
+
+async function downloadWithResume(url, filePath, remoteSize) {
+  let wrote = 0;
+  try {
+    const st = fs.statSync(filePath);
+    wrote = st.size >>> 0;
+  } catch {}
+
+  // If we already have the full file and it's fresh enough, keep it.
+  if (remoteSize && wrote === remoteSize) return;
+
+  const maxAttempts = 8;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const headers = wrote ? { Range: `bytes=${wrote}-` } : {};
+      const res = await fetch(url, { redirect: 'follow', headers });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+      // If server ignored Range and sends the whole file (200), start over
+      if (res.status === 200 && wrote !== 0) {
+        fs.unlinkSync(filePath);
+        wrote = 0;
+      }
+      await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+
+      // Stream directly to file (append)
+      const tmp = `${filePath}.downloading`;
+      const nodeReadable = Readable.fromWeb(res.body);
+      await pipeline(nodeReadable, fs.createWriteStream(tmp, { flags: wrote ? 'a' : 'w' }));
+      // Move/cat tmp to final
+      if (wrote) {
+        const out = fs.createWriteStream(filePath, { flags: 'a' });
+        await pipeline(fs.createReadStream(tmp), out);
+        fs.unlinkSync(tmp);
+      } else {
+        fs.renameSync(tmp, filePath);
+      }
+
+      // Verify size if known
+      if (remoteSize) {
+        const st2 = fs.statSync(filePath);
+        if (st2.size >= remoteSize) return;
+        wrote = st2.size >>> 0;
+        continue; // loop to fetch remaining bytes
+      } else {
+        return;
+      }
+    } catch (e) {
+      const backoff = Math.min(30_000 * attempt, 180_000);
+      console.warn(`[ttc-sqlite] resume attempt ${attempt} failed: ${e.message}. Retrying in ${Math.round(backoff/1000)}s`);
+      await new Promise(r => setTimeout(r, backoff));
+    }
+  }
+  throw new Error('exhausted retries');
+}
+
+/* --------------------- ensure local cached files --------------------- */
+
 async function ensureSqliteLocal() {
   if (!SQLITE_URL) throw new Error('TTC_SQLITE_URL not set');
   const file = sqlitePathFor(SQLITE_URL);
+
+  // Freshness check
   try {
     const st = fs.statSync(file);
     if (st.size > 0 && (Date.now() - st.mtimeMs) < TTL_SQLITE_MS) return file;
   } catch {}
+
   console.log(`[ttc-sqlite] downloading: ${SQLITE_URL}`);
-  const res = await fetch(SQLITE_URL, { redirect: 'follow' });
-  if (!res.ok || !res.body) throw new Error(`download sqlite failed: ${res.status}`);
-  await streamHttpToFile(res, file);
+  const size = await httpHeadSize(SQLITE_URL);
+  await downloadWithResume(SQLITE_URL, file, size || null);
   console.log(`[ttc-sqlite] saved → ${file}`);
   return file;
 }
 
-// ---------- public: open sqlite (file-backed, low RAM) ----------
+async function ensureZipLocal() {
+  if (!GTFS_ZIP_URL) throw new Error('TTC_GTFS_STATIC_URL not set');
+  const file = zipPathFor(GTFS_ZIP_URL);
+  try {
+    const st = fs.statSync(file);
+    if (st.size > 0 && (Date.now() - st.mtimeMs) < TTL_ZIP_MS) return file;
+  } catch {}
+  console.log(`[ttc-gtfszip] downloading: ${GTFS_ZIP_URL}`);
+  const res = await fetch(GTFS_ZIP_URL, { redirect: 'follow' });
+  if (!res.ok || !res.body) throw new Error(`gtfs zip fetch failed: ${res.status}`);
+  const nodeReadable = Readable.fromWeb(res.body);
+  await fs.promises.mkdir(path.dirname(file), { recursive: true });
+  await pipeline(nodeReadable, fs.createWriteStream(file));
+  console.log(`[ttc-gtfszip] saved → ${file}`);
+  return file;
+}
+
+async function openZipEntry(entryName) {
+  const zipFile = await ensureZipLocal();
+  const dir = await unzipper.Open.file(zipFile);
+  const ent = dir.files.find(f => f.path.toLowerCase() === entryName.toLowerCase());
+  if (!ent) throw new Error(`${entryName} not found in GTFS zip`);
+  return ent.stream();
+}
+
+/* --------------------- SQLite open + status --------------------- */
+
 export async function openTtcSqlite() {
   if (DB) return DB;
   const file = await ensureSqliteLocal();
@@ -58,20 +160,29 @@ export async function openTtcSqlite() {
   return DB;
 }
 
-export function isSqliteReady() {
-  return sqliteReady;
-}
+export function isSqliteReady() { return sqliteReady; }
 
-// Kick off background download/open at boot (non-blocking)
+/**
+ * Start a background open that keeps retrying until success.
+ * Never throws; logs failures and keeps trying.
+ */
 export async function primeSQLite() {
-  try {
-    await openTtcSqlite();
-  } catch (e) {
-    console.warn(`[ttc-sqlite] prime failed: ${e.message}`);
-  }
+  const loop = async () => {
+    for (;;) {
+      try {
+        await openTtcSqlite();
+        return;
+      } catch (e) {
+        console.warn(`[ttc-sqlite] prime failed, will retry: ${e.message}`);
+        await new Promise(r => setTimeout(r, SQLITE_RETRY_DELAY_MS));
+      }
+    }
+  };
+  loop(); // fire-and-forget
 }
 
-// ---------- tiny queries used by adapters/schedule ----------
+/* --------------------- Queries used by schedule/RT adapters --------------------- */
+
 export function expandStationStopIds(db, stopId) {
   const row = db.prepare('SELECT location_type FROM stops WHERE stop_id = ?').get(String(stopId));
   if (row && Number(row.location_type) === 1) {
@@ -104,31 +215,8 @@ export function routeShortNamesForRouteIds(db, routeIds) {
   return m;
 }
 
-// ---------- GTFS zip: cache to /tmp and stream entries (no buffering) ----------
-async function ensureZipLocal() {
-  if (!GTFS_ZIP_URL) throw new Error('TTC_GTFS_STATIC_URL not set');
-  const file = zipPathFor(GTFS_ZIP_URL);
-  try {
-    const st = fs.statSync(file);
-    if (st.size > 0 && (Date.now() - st.mtimeMs) < TTL_ZIP_MS) return file;
-  } catch {}
-  console.log(`[ttc-gtfszip] downloading: ${GTFS_ZIP_URL}`);
-  const res = await fetch(GTFS_ZIP_URL, { redirect: 'follow' });
-  if (!res.ok || !res.body) throw new Error(`gtfs zip fetch failed: ${res.status}`);
-  await streamHttpToFile(res, file);
-  console.log(`[ttc-gtfszip] saved → ${file}`);
-  return file;
-}
+/* --------------------- Light-weight fallbacks from GTFS zip --------------------- */
 
-async function openZipEntry(entryName) {
-  const zipFile = await ensureZipLocal();
-  const dir = await unzipper.Open.file(zipFile);
-  const ent = dir.files.find(f => f.path.toLowerCase() === entryName.toLowerCase());
-  if (!ent) throw new Error(`${entryName} not found in GTFS zip`);
-  return ent.stream();
-}
-
-// Build Map(route_id → short_name) by streaming routes.txt
 export async function loadRoutesMapFromZip() {
   const map = new Map();
   const s = await openZipEntry('routes.txt');
@@ -146,7 +234,6 @@ export async function loadRoutesMapFromZip() {
   return map;
 }
 
-// Expand station to platform ids by streaming stops.txt
 export async function expandStationFromZip(stopId) {
   const id = String(stopId);
   let isStation = false;

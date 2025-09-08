@@ -1,6 +1,6 @@
-// backend/src/lib/adapters/ttc.js
+// src/lib/adapters/ttc.js
 import { fetchRT, defaultStopMatcher } from './base.js';
-import { openTtcSqlite, isSqliteReady, mapTripIdsToRouteShort, loadRoutesMapFromZip } from '../sqlite.js';
+import { openTtcSqlite, isSqliteReady, mapTripIdsToRouteShort, loadRoutesMapFromZip } from '../lib/sqlite.js';
 
 const urls = {
   vehicles: process.env.TTC_RT_VEHICLES || 'https://bustime.ttc.ca/gtfsrt/vehicles',
@@ -12,7 +12,7 @@ function routeShortMatches(shortName, routeRef) {
   if (!routeRef) return true;
   const a = String(shortName||'').toLowerCase();
   const b = String(routeRef||'').toLowerCase();
-  return a === b || a.startsWith(b); // "83" matches "83A"
+  return a === b || a.startsWith(b);
 }
 
 export const ttc = {
@@ -42,7 +42,7 @@ export const ttc = {
     }
     if (!rows.length) return [];
 
-    // 1) Try SQLite for trip_id → short_name
+    // Prefer SQLite map
     let shortByTrip = new Map();
     if (isSqliteReady()) {
       try {
@@ -50,8 +50,7 @@ export const ttc = {
         shortByTrip = mapTripIdsToRouteShort(db, Array.from(tripIds));
       } catch {}
     }
-
-    // 2) If still missing, build a Map(route_id -> short_name) from routes.txt and map via route_id
+    // Fallback via routes.txt
     if (![...shortByTrip.values()].find(Boolean)) {
       try {
         const byRoute = await loadRoutesMapFromZip();
@@ -62,14 +61,12 @@ export const ttc = {
       } catch {}
     }
 
-    const out = rows
+    return rows
       .map(r => ({ ...r, short: shortByTrip.get(r.tid) || '' }))
       .filter(r => routeShortMatches(r.short, routeRef))
       .sort((a,b)=> a.t - b.t)
       .slice(0, Math.max(1, limit))
       .map(r => ({ when: new Date(r.t * 1000).toISOString(), realtime: true, routeShortName: r.short, headsign: r.headsign || '' }));
-
-    return out;
   },
 
   async alerts(routeRef) {

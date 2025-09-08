@@ -1,8 +1,7 @@
-// backend/src/lib/adapters/base.js
+// src/lib/adapters/base.js
 import GtfsRT from 'gtfs-realtime-bindings';
 const TransitRealtime = GtfsRT.transit_realtime;
 
-// Tiny cache to avoid decoding the same feed repeatedly within a few seconds
 const RT_CACHE = new Map();
 
 export async function fetchRT(url, { timeoutMs = 8000, ttlMs = Number(process.env.RT_CACHE_TTL_MS || 5000) } = {}) {

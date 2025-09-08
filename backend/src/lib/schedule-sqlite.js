@@ -1,5 +1,6 @@
-// backend/src/lib/schedule-sqlite.js
+// src/lib/schedule-sqlite.js
 import { openTtcSqlite, isSqliteReady, expandStationStopIds, routeShortNamesForRouteIds, expandStationFromZip } from './sqlite.js';
+import { nextArrivalsFromZipStreaming, linesAtStopFromZipStreaming } from './gtfsZipSchedule.js';
 
 const TZ = 'America/Toronto';
 const toLocal = (d) => new Date(d.toLocaleString('en-CA', { timeZone: TZ }));
@@ -25,26 +26,27 @@ export async function expandStopIdsIfStation(agencyKey, stopId) {
     const db = await openTtcSqlite();
     return expandStationStopIds(db, stopId);
   }
-  // fallback: stream stops.txt from TTC zip
   return await expandStationFromZip(stopId);
 }
 
 export async function nextArrivalsFromSchedule(agencyKey, stopId, { limit = 10, routeRef = null, fromTime } = {}) {
   if (String(agencyKey||'').toLowerCase() !== 'ttc') return [];
   if (!isSqliteReady()) {
-    // If DB isn't ready yet, we can't compute schedule fallback safely → return empty; RT will have been tried first.
-    return [];
+    // Fallback to streaming zip until SQLite is ready
+    const stopIds = await expandStopIdsIfStation(agencyKey, stopId);
+    return await nextArrivalsFromZipStreaming({ stopIds, routeRef, limit, now: fromTime ? new Date(fromTime) : new Date(), horizonMin: 360 });
   }
-  const db = await openTtcSqlite();
 
+  const db = await openTtcSqlite();
   const now = fromTime ? new Date(fromTime) : new Date();
   const nowLoc = toLocal(now);
   const dayStart = localMidnight(nowLoc);
   const nowSec = nowLoc.getHours()*3600 + nowLoc.getMinutes()*60 + nowLoc.getSeconds();
-  const horizonSec = nowSec + 360*60; // 6h
+  const horizonSec = nowSec + 360*60;
 
   const services = activeServiceIds(db, nowLoc);
   const stopIds = expandStationStopIds(db, stopId);
+
   const rows = db.prepare(
     `SELECT st.trip_id, st.departure_time
      FROM stop_times st
@@ -62,8 +64,10 @@ export async function nextArrivalsFromSchedule(agencyKey, stopId, { limit = 10, 
   if (!wanted.length) return [];
 
   const tids = Array.from(new Set(wanted.map(x=>x.tid)));
-  const trips = db.prepare(`SELECT trip_id, service_id, route_id, trip_headsign FROM trips WHERE trip_id IN (${tids.map(()=>'?').join(',')})`).all(...tids)
-                  .filter(t => services.has(String(t.service_id)));
+  const trips = db.prepare(
+    `SELECT trip_id, service_id, route_id, trip_headsign
+     FROM trips WHERE trip_id IN (${tids.map(()=>'?').join(',')})`
+  ).all(...tids).filter(t => services.has(String(t.service_id)));
 
   if (!trips.length) return [];
   const routeIds = Array.from(new Set(trips.map(t=>String(t.route_id))));
@@ -87,9 +91,12 @@ export async function nextArrivalsFromSchedule(agencyKey, stopId, { limit = 10, 
 
 export async function linesAtStopWindow(agencyKey, stopId, { windowMin = 60 } = {}) {
   if (String(agencyKey||'').toLowerCase() !== 'ttc') return [];
-  if (!isSqliteReady()) return []; // until DB is ready
-  const db = await openTtcSqlite();
+  if (!isSqliteReady()) {
+    const stopIds = await expandStopIdsIfStation(agencyKey, stopId);
+    return await linesAtStopFromZipStreaming({ stopIds, windowMin, now: new Date() });
+  }
 
+  const db = await openTtcSqlite();
   const nowLoc = toLocal(new Date());
   const nowSec = nowLoc.getHours()*3600 + nowLoc.getMinutes()*60 + nowLoc.getSeconds();
   const horizonSec = nowSec + Math.max(5, Number(windowMin||60))*60;
