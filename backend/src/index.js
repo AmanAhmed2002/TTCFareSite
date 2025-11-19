@@ -1,43 +1,32 @@
-// backend/src/index.js
-import 'dotenv/config';
-import { PORT } from './config.js';
-import { app } from './app.js';
-// Import the jobs module as a namespace to avoid bare-identifier issues
-import * as Jobs from './routes/jobs.js';
+import express from "express";
+import dotenv from "dotenv";
+import pkg from "pg";
 
-app.listen(PORT, () => {
-  console.log(`API listening on http://localhost:${PORT}`);
+dotenv.config();
+
+const { Pool } = pkg;
+
+const pool = new Pool({
+  host: process.env.PGHOST,
+  user: process.env.PGUSER,
+  password: process.env.PGPASSWORD,
+  database: process.env.PGDATABASE,
+  port: process.env.PGPORT,
+  ssl: { rejectUnauthorized: false },
 });
 
-/**
- * Optional in-process job loop (for Render web services).
- */
-if (process.env.JOBS_LOOP === 'true') {
-  let running = false;
+const app = express();
+app.use(express.json());
 
-  async function tick() {
-    if (running) return;
-    running = true;
-    try {
-      const fn = Jobs?.runDueSmsJobs;
-      if (typeof fn !== 'function') {
-        // Defensive guard: avoids ReferenceError and logs helpful context
-        console.error('[jobs] runDueSmsJobs not available (did routes/jobs.js export it?)');
-        return;
-      }
-      const r = await fn();
-      if (r?.processed > 0) {
-        console.log(`[jobs] sent ${r.processed} SMS job(s)`);
-      }
-    } catch (e) {
-      console.error('[jobs] loop error:', e);
-    } finally {
-      running = false;
-    }
+app.get("/", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT NOW()");
+    res.json({ time: result.rows[0] });
+  } catch (err) {
+    console.error("Database query failed:", err.message);
+    res.status(500).send("Database query failed");
   }
+});
 
-  // First tick shortly after boot, then every 60s
-  setTimeout(tick, 5000);
-  setInterval(tick, 60_000);
-}
-
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));

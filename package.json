@@ -1,6 +1,8 @@
 {
   "dependencies": {
+    "dotenv": "^17.2.3",
     "fast-csv": "^5.0.5",
+    "pg": "^8.16.3",
     "unzipper": "^0.12.3"
   }
 }

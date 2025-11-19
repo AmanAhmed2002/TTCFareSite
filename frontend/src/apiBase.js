@@ -7,11 +7,7 @@ const isPreviewLocalhost =
   !isDev && typeof window !== 'undefined' && window.location.hostname === 'localhost';
 
 // Prefer explicit base if provided (works in dev, preview, prod)
-export const API_BASE =
-  explicit ||
-  (isDev
-    ? '' // dev uses Vite proxy to http://localhost:4000
-    : isPreviewLocalhost
-      ? 'http://localhost:4000'
-      : ''); // otherwise require VITE_API_BASE to be set
+// frontend/src/apiBase.js
+export const API_BASE = "ttcbackend-gacpdqemdbgsgdg2.canadacentral-01.azurewebsites.net";
+
 

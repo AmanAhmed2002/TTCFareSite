@@ -41,10 +41,11 @@ router.post('/parse', (req, res) => {
   else if (/(route|termini|stops)/.test(text)) intent = 'route';
 
   // agency
-  let agency = null;
-  for (const a of ['ttc','toronto','miway','mississauga','brampton','drt','durham','yrt','york']) {
-    if (text.includes(a)) { agency = normalizeAgency(a); break; }
-  }
+ let agency = null; // default to TTC
+for (const a of ['ttc','toronto','miway','mississauga','brampton','drt','durham','yrt','york']) {
+  if (text.includes(a)) { agency = normalizeAgency(a); break; }
+}
+
 
   // route_ref (e.g., "bus 83", "83", "line 2")
   let route_ref = null;

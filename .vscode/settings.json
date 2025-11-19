@@ -1,0 +1,8 @@
+{
+    "appService.defaultWebAppToDeploy": "/subscriptions/61850ff0-3162-40f4-b96c-e9a148246611/resourceGroups/ttc/providers/Microsoft.Web/sites/ttcbackend",
+    "appService.deploySubpath": "backend",
+    "appService.zipIgnorePattern": [
+        "node_modules{,/**}",
+        ".vscode{,/**}"
+    ]
+}

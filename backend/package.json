@@ -1,45 +1,14 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "type": "module",
   "main": "src/index.js",
+  "type": "module",
   "scripts": {
-    "dev": "nodemon --watch src --ext js --exec \"node src/index.js\"",
-    "start": "node src/index.js",
-    "import-gtfs": "node ../scripts/import-gtfs-stops.js",
-    "db:init": "node ../scripts/db-init.js",
-    "static-data-ttc": "node ../scripts/import-gtfs-static.js --zip ../data/ttc-gtfs.zip --agency TTC",
-    "static-data-MIWAY": "node ../scripts/import-gtfs-static.js --zip ../data/miway-gtfs.zip --agency MIWAY",
-    "static-data-brampton": "node ../scripts/import-gtfs-static.js --zip ../data/brampton-gtfs.zip --agency BRAMPTON",
-    "static-data-durham": "node ../scripts/import-gtfs-static.js --zip ../data/drt-gtfs.zip --agency DRT",
-    "static-data-yrt": "node ../scripts/import-gtfs-static.js --zip ../data/yrt-gtfs.zip --agency YRT",
-    "test": "node --test",
-    "test:watch": "node --test --watch"
+    "start": "node src/index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "cors": "^2.8.5",
-    "csv-parse": "^6.1.0",
-    "dayjs": "^1.11.17",
-    "dotenv": "^17.2.1",
     "express": "^5.1.0",
-    "express-rate-limit": "^8.0.1",
-    "fast-csv": "^5.0.5",
-    "gtfs-realtime-bindings": "^1.1.1",
-    "helmet": "^8.1.0",
-    "luxon": "^3.7.2",
-    "morgan": "^1.10.1",
-    "nodemailer": "^7.0.6",
     "pg": "^8.16.3",
-    "undici": "^7.15.0",
-    "unzipper": "^0.12.3",
-    "web-push": "^3.6.7",
-    "zod": "^4.1.5"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.10",
-    "supertest": "^7.1.4"
+    "dotenv": "^17.2.1"
   }
 }
