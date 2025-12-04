@@ -13,7 +13,7 @@ router.get('/', async (req, res) => {
 
   // Simple case-insensitive search
   const { rows } = await pool.query(
-    `SELECT id, name, lat, lon, agency
+    `SELECT stop_id, stop_name, stop_lat, stop_lon, agency
      FROM stops
      WHERE name ILIKE $1
      ORDER BY name ASC
