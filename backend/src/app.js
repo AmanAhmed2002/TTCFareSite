@@ -38,7 +38,7 @@ const corsOptions = {
     if (CORS_ALLOWLIST.includes(origin)) return cb(null, true);
     cb(new Error('CORS not allowed for this origin'));
   },
-  credentials: false
+  
 };
 app.use(cors(corsOptions));
 

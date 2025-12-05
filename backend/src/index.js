@@ -5,9 +5,14 @@ import { app } from './app.js';
 // Import the jobs module as a namespace to avoid bare-identifier issues
 import * as Jobs from './routes/jobs.js';
 
-app.listen(PORT, () => {
-  console.log(`API listening on http://localhost:${PORT}`);
+
+
+const port = process.env.PORT || 8080;
+
+app.listen(port, '0.0.0.0', () => {
+  console.log(`API running on port ${port}`);
 });
+
 
 /**
  * Optional in-process job loop (for Render web services).
