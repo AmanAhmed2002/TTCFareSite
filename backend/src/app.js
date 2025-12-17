@@ -31,18 +31,29 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(express.json());
 app.use(morgan('combined'));
 
-// CORS: allow local dev and your Vercel domain(s)
-/*const corsOptions = {
+
+console.log('CORS_ALLOWLIST:', CORS_ALLOWLIST);
+
+// CORS configuration
+const corsOptions = {
   origin(origin, cb) {
+    // Allow non-browser clients (curl, Postman) with no origin
     if (!origin) return cb(null, true);
-    if (CORS_ALLOWLIST.includes(origin)) return cb(null, true);
-    cb(new Error('CORS not allowed for this origin'));
+
+    // If no allowlist is set at all, allow everything
+    if (!CORS_ALLOWLIST.length) return cb(null, true);
+
+    if (CORS_ALLOWLIST.includes(origin)) {
+      return cb(null, true);
+    }
+    return cb(new Error(`CORS not allowed for origin: ${origin}`));
   },
-  credentials: false
 };
+
+// Apply CORS to all routes (NO extra path argument!)
 app.use(cors(corsOptions));
-*/
-app.use(cors());
+
+
 
 // Rate-limit the API
 // limiter happy while preserving your existing behavior.
