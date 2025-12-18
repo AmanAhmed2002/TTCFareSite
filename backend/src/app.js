@@ -17,42 +17,57 @@ import chatRoute from './routes/chat.js';
 
 export const app = express();
 
+app.set('trust proxy', 1);
+
 // Trust reverse proxies (e.g., ngrok) when opted in
-if (process.env.TRUST_PROXY) {
+/*if (process.env.TRUST_PROXY) {
   // true = trust all proxies; or set a number (e.g., 1) if you prefer
   const val = process.env.TRUST_PROXY === 'true' ? true :
               /^\d+$/.test(process.env.TRUST_PROXY) ? Number(process.env.TRUST_PROXY) :
               process.env.TRUST_PROXY;
   app.set('trust proxy', val);
 }
-
+*/
 // Security / parsing
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(express.json());
 app.use(morgan('combined'));
 
-
 console.log('CORS_ALLOWLIST:', CORS_ALLOWLIST);
 
-// CORS configuration
-const corsOptions = {
+// CORS: allow local dev and your Vercel domain(s)
+/*const corsOptions = {
   origin(origin, cb) {
-    // Allow non-browser clients (curl, Postman) with no origin
     if (!origin) return cb(null, true);
-
-    // If no allowlist is set at all, allow everything
-    if (!CORS_ALLOWLIST.length) return cb(null, true);
-
-    if (CORS_ALLOWLIST.includes(origin)) {
-      return cb(null, true);
-    }
-    return cb(new Error(`CORS not allowed for origin: ${origin}`));
+    if (CORS_ALLOWLIST.includes(origin)) return cb(null, true);
+    cb(new Error('CORS not allowed for this origin'));
   },
+  credentials: false
 };
-
-// Apply CORS to all routes (NO extra path argument!)
 app.use(cors(corsOptions));
+*/
 
+
+app.use(
+  cors({
+    origin(origin, cb) {
+      // Non-browser requests (curl, Postman, Azure health checks)
+      if (!origin) return cb(null, true);
+
+      // If no allowlist configured, allow everything (handy for local dev)
+      if (CORS_ALLOWLIST.length === 0) {
+        return cb(null, true);
+      }
+
+      // Only allow known frontends
+      if (CORS_ALLOWLIST.includes(origin)) {
+        return cb(null, true);
+      }
+
+      return cb(new Error(`Origin ${origin} not allowed by CORS`));
+    },
+  })
+);
 
 
 // Rate-limit the API
@@ -60,7 +75,6 @@ app.use(cors(corsOptions));
 const limiter = rateLimit({
   windowMs: 60 * 1000,
   max: 120,
-  validate: { trustProxy: false },
 });
 app.use('/api/', limiter);
 
