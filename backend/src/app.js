@@ -4,92 +4,66 @@ import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
-
 import { CORS_ALLOWLIST } from './config.js';
-
 import checkRoute from './routes/check.js';
 import stopsRoute from './routes/stops.js';
-// import pushRoute from './routes/push.js';
+//import pushRoute from './routes/push.js';
 import remindersRoute from './routes/reminders.js';
 import jobsRoute from './routes/jobs.js';
 import smsRoute from './routes/sms.js';
 import transitRoute from './routes/transit.js';
 import chatRoute from './routes/chat.js';
 
+
 export const app = express();
 
-app.set('trust proxy', 1);
+// Trust reverse proxies (e.g., ngrok) when opted in
+if (process.env.TRUST_PROXY) {
+  // true = trust all proxies; or set a number (e.g., 1) if you prefer
+  const val = process.env.TRUST_PROXY === 'true' ? true :
+              /^\d+$/.test(process.env.TRUST_PROXY) ? Number(process.env.TRUST_PROXY) :
+              process.env.TRUST_PROXY;
+  app.set('trust proxy', val);
+}
 
-// Security headers
+// Security / parsing
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(express.json());
 app.use(morgan('combined'));
 
-console.log('CORS_ALLOWLIST:', CORS_ALLOWLIST);
-
-// ---- CORS (must be BEFORE routes and BEFORE rate limiting) ----
+// CORS: allow local dev and your Vercel domain(s)
 const corsOptions = {
   origin(origin, cb) {
-    // Allow non-browser requests (curl/postman/azure health checks)
     if (!origin) return cb(null, true);
-
-    // If allowlist empty, allow all (useful for local dev)
-    if (!CORS_ALLOWLIST || CORS_ALLOWLIST.length === 0) return cb(null, true);
-
-    // Exact-match allowlist
     if (CORS_ALLOWLIST.includes(origin)) return cb(null, true);
-
-    return cb(new Error(`Origin ${origin} not allowed by CORS`));
+    cb(new Error('CORS not allowed for this origin'));
   },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: false,
-  optionsSuccessStatus: 204,
+  credentials: false
 };
-
 app.use(cors(corsOptions));
 
-// Express 5: use regex instead of '*'
-app.options(/.*/, cors(corsOptions));
+app.use(cors());
 
-// Parse JSON after CORS is fine (preflight has no body)
-app.use(express.json());
-
-// ---- Rate-limit the API (skip OPTIONS preflight) ----
+// Rate-limit the API
+// limiter happy while preserving your existing behavior.
 const limiter = rateLimit({
   windowMs: 60 * 1000,
   max: 120,
-  skip: (req) => req.method === 'OPTIONS',
+  validate: { trustProxy: false },
 });
 app.use('/api/', limiter);
 
-app.use((req, res, next) => {
-  res.setTimeout(35000, () => {
-    if (!res.headersSent) {
-      res.status(504).json({ ok: false, error: "Server timed out (35s)" });
-    }
-  });
-  next();
-});
-
-
-// ---- Routes ----
+// Routes
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
-
 app.use('/api/check', checkRoute);
 app.use('/api/stops', stopsRoute);
-// app.use('/api/push', pushRoute);
+//app.use('/api/push', pushRoute);
 app.use('/api/reminders', remindersRoute);
 app.use('/api/jobs', jobsRoute);
 app.use('/api/sms', smsRoute);
 app.use('/api/transit', transitRoute);
 app.use('/api/chat', chatRoute);
 
-// ---- CORS error handler (so it doesn't fail silently) ----
-app.use((err, req, res, next) => {
-  if (err?.message?.includes('not allowed by CORS')) {
-    return res.status(403).json({ ok: false, error: err.message });
-  }
-  next(err);
-});
 
 export default app;
+
