@@ -116,112 +116,140 @@ router.get('/arrivals', async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit || 10), 1), 50);
   const fromEpochSec = Number(req.query.from || 0) || undefined;
 
+  // NEW: make availableRoutes optional (default off)
+  const includeRoutes = String(req.query.include_routes || '0') === '1';
+
   if (!agencyKey) return res.status(400).json({ error: 'agency required (ttc)' });
   if (!stopRefRaw) return res.status(400).json({ error: 'stop_ref required' });
 
   const adapter = adapters[agencyKey];
   if (!adapter) return res.status(400).json({ error: `Unsupported agency: ${agencyKey}` });
 
+  // Tunables (keep these conservative to avoid Azure timeouts)
+  const OVERALL_DEADLINE_MS = Number(process.env.ARRIVALS_DEADLINE_MS || 12000);
+  const PER_STOP_RT_TIMEOUT_MS = Number(process.env.RT_STOP_TIMEOUT_MS || 3500);
+  const PER_STOP_SCH_TIMEOUT_MS = Number(process.env.SCH_STOP_TIMEOUT_MS || 3500);
+  const MAX_STOP_IDS = Number(process.env.ARRIVALS_MAX_STOPIDS || 8);
+
+  const start = Date.now();
+  const timeLeft = () => Math.max(0, OVERALL_DEADLINE_MS - (Date.now() - start));
+
   try {
     const exactId = /^[A-Za-z0-9_-]+$/.test(stopRefRaw) ? stopRefRaw : null;
     const candidates = [];
     if (exactId) candidates.push({ id: exactId, name: exactId });
+
     if (!exactId || /[A-Za-z]/.test(stopRefRaw)) {
-      const more = await findCandidateStopIds(agencyKey, stopRefRaw, 10);
-      for (const c of more) if (!candidates.find(x => String(x.id) === String(c.id))) candidates.push(c);
+      const more = await withTimeout(
+        findCandidateStopIds(agencyKey, stopRefRaw, 10),
+        Math.min(2500, timeLeft()),
+        'findCandidateStopIds'
+      );
+      for (const c of more) {
+        if (!candidates.find(x => String(x.id) === String(c.id))) candidates.push(c);
+      }
     }
+
     if (!candidates.length) return res.status(404).json({ error: 'Stop not found' });
 
-        // NEW: expand ALL candidates (station-aware + proximity) and union
-    const expandedSets = await Promise.all(
-      candidates.map(c => expandStopIds(agencyKey, c.id))
+    // Expand candidates -> stop IDs (cap to avoid huge fan-out)
+    const expandedSets = await withTimeout(
+      Promise.all(candidates.map(c => expandStopIds(agencyKey, c.id))),
+      Math.min(3000, timeLeft()),
+      'expandStopIds'
     );
-    const allStopIds = [...new Set(expandedSets.flat().map(String))];
 
-    // Prefer the first candidate’s label, but we’ll fetch across ALL expanded ids
-    let chosen = candidates[0] || null;
+    const allStopIds = [...new Set(expandedSets.flat().map(String))];
+    const stopIdsToQuery = cap(allStopIds, MAX_STOP_IDS);
+
+    const chosen = candidates[0] || null;
+
     let arrivals = [];
     let source = 'rt';
 
-    // realtime (disabled when DISABLE_RT=1)
-    if (!DISABLE_RT) {
-      const rtLists = [];
-      for (const sid of allStopIds) {
-        try {
-          const list = await adapter.nextArrivalsByStop(sid, {
+    // ---- realtime (parallel-ish, with per-stop timeouts) ----
+    if (!DISABLE_RT && timeLeft() > 0) {
+      const tasks = stopIdsToQuery.map(sid =>
+        withTimeout(
+          adapter.nextArrivalsByStop(sid, {
             limit,
             routeRef: routeRef || undefined,
             fromEpochSec
-          });
-          if (list?.length) rtLists.push(list);
-        } catch {}
-      }
-      arrivals = mergeAndSortArrivals(rtLists, limit);
+          }),
+          Math.min(PER_STOP_RT_TIMEOUT_MS, timeLeft()),
+          `rt:${sid}`
+        ).catch(() => [])
+      );
+
+      const rtLists = await Promise.all(tasks);
+      arrivals = mergeAndSortArrivals(rtLists.filter(Boolean), limit);
       if (arrivals.length) source = 'rt';
     }
 
-    // schedule fallback (or primary when DISABLE_RT=1)
-    if (!arrivals.length) {
-      const schLists = [];
-      for (const sid of allStopIds) {
-        try {
-          const list = await nextArrivalsFromSchedule(agencyKey, sid, {
+    // ---- schedule fallback ----
+    if (!arrivals.length && timeLeft() > 0) {
+      const tasks = stopIdsToQuery.map(sid =>
+        withTimeout(
+          nextArrivalsFromSchedule(agencyKey, sid, {
             limit,
             routeRef: routeRef || undefined,
             fromTime: fromEpochSec ? new Date(fromEpochSec * 1000) : undefined,
-          });
-          if (list?.length) schLists.push(list);
-        } catch {}
-      }
-      arrivals = mergeAndSortArrivals(schLists, limit);
+          }),
+          Math.min(PER_STOP_SCH_TIMEOUT_MS, timeLeft()),
+          `schedule:${sid}`
+        ).catch(() => [])
+      );
+
+      const schLists = await Promise.all(tasks);
+      arrivals = mergeAndSortArrivals(schLists.filter(Boolean), limit);
       if (arrivals.length) source = 'schedule';
     }
 
-    
-
-    if (!chosen) {
-      return res.json({ arrivals: [], source: 'rt', availableRoutes: [], generatedAt: new Date().toISOString() });
-    }
-
-        // distinct lines at location (full-day)
+    // IMPORTANT: availableRoutes is expensive — default OFF.
+    // Use /api/transit/lines to populate the dropdown instead.
     let availableRoutes = undefined;
-    if (!routeRef) {
-      const idsForLines = (typeof allStopIds !== 'undefined' && allStopIds.length)
-        ? allStopIds
-        : await expandStopIds(agencyKey, chosen.id);
-
+    if (includeRoutes && !routeRef && timeLeft() > 0) {
+      const idsForLines = stopIdsToQuery.length ? stopIdsToQuery : await expandStopIds(agencyKey, chosen.id);
       const set = new Set();
-      for (const sid of idsForLines) {
-        try {
-          const lines = await linesAtStopWindow(agencyKey, sid, { windowMin: 1440 });
-          for (const l of lines) set.add(String(l));
-        } catch {}
-      }
-      if (!DISABLE_RT && set.size === 0) {
-        for (const sid of idsForLines) {
-          try {
-            const list = await adapters[agencyKey].nextArrivalsByStop(sid, { limit: 50 });
-            for (const a of list || []) if (a.routeShortName) set.add(String(a.routeShortName));
-          } catch {}
-        }
-      }
-      availableRoutes = Array.from(set).sort((a,b)=> String(a).localeCompare(String(b), undefined, { numeric: true }));
-    }
 
+      // reduce window to avoid heavy work (full-day 1440 can be slow)
+      const WINDOW_MIN = Number(process.env.LINES_WINDOW_MIN || 360);
+
+      const tasks = idsForLines.map(sid =>
+        withTimeout(
+          linesAtStopWindow(agencyKey, sid, { windowMin: WINDOW_MIN }),
+          Math.min(2500, timeLeft()),
+          `lines:${sid}`
+        ).catch(() => [])
+      );
+
+      const lists = await Promise.all(tasks);
+      for (const lines of lists) for (const l of (lines || [])) set.add(String(l));
+
+      availableRoutes = Array.from(set).sort((a,b)=>
+        String(a).localeCompare(String(b), undefined, { numeric: true })
+      );
+    }
 
     return res.json({
       arrivals,
       source,
-      stopId: chosen.id,
-      stopName: chosen.name,
+      stopId: chosen?.id ?? null,
+      stopName: chosen?.name ?? null,
       availableRoutes,
       appliedRouteFilter: !!routeRef,
       generatedAt: new Date().toISOString(),
     });
   } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
+    // If we exceeded our own deadline, return a clean timeout instead of Azure 504
+    const msg = String(e?.message || e);
+    if (msg.includes('timed out')) {
+      return res.status(504).json({ error: msg });
+    }
+    return res.status(500).json({ error: msg });
   }
 });
+
 
 // ---------- ALERTS (real-time + TTC planned categories) ----------
 
