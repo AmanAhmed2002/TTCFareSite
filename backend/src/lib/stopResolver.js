@@ -5,36 +5,14 @@ import { getPool } from '../db.js';
 export async function getStopId(agencyKey, stopRef) {
   if (!stopRef) return null;
   const s = String(stopRef).trim();
-  if (!s) return null;
+  if (/^[A-Za-z0-9_-]+$/.test(s)) return s; // looks like an id
 
   const pool = getPool();
   if (!pool) return null;
 
-  const ag = String(agencyKey || '').toUpperCase();
-
-  // ✅ If it's digits, treat as TTC stop number (stop_code) first
-  if (/^\d{3,6}$/.test(s)) {
-    try {
-      const { rows } = await pool.query(
-        `SELECT id FROM stops WHERE agency=$1 AND stop_code=$2 LIMIT 1`,
-        [ag, s]
-      );
-      if (rows?.[0]?.id) return String(rows[0].id);
-    } catch {
-      // if stop_code column doesn't exist or query fails, ignore and fall through
-    }
-    // If not found by stop_code, it might actually be a stop_id; allow it
-    return s;
-  }
-
-  // If it looks like an id (non-numeric tokens), return it
-  if (/^[A-Za-z0-9_-]+$/.test(s)) return s;
-
-  // Otherwise fuzzy lookup by name
   const cands = await findCandidateStopIds(agencyKey, s, 8);
   return cands[0]?.id || null;
 }
-
 
 /** Return candidate stop ids by name (token-aware). */
 export async function findCandidateStopIds(agencyKey, nameLike, max = 12) {
