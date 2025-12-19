@@ -1,11 +1,9 @@
 // backend/src/app.js
 import express from 'express';
 import helmet from 'helmet';
-import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { CORS_ALLOWLIST } from './config.js';
-
 import checkRoute from './routes/check.js';
 import stopsRoute from './routes/stops.js';
 import remindersRoute from './routes/reminders.js';
@@ -20,42 +18,39 @@ app.set('trust proxy', 1);
 
 // Security / parsing
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(express.json());
 app.use(morgan('combined'));
 
-// ---- CORS (MUST be before routes + rate limit) ----
 console.log('CORS_ALLOWLIST:', CORS_ALLOWLIST);
 
-const corsOptions = {
-  origin(origin, cb) {
-    // Allow non-browser requests (curl/postman/azure health checks)
-    if (!origin) return cb(null, true);
+// --- SIMPLE CORS + PREFLIGHT HANDLER ---
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
 
-    // If allowlist empty, allow all (dev convenience)
-    if (!CORS_ALLOWLIST || CORS_ALLOWLIST.length === 0) return cb(null, true);
+  // If no allowlist configured, allow all origins
+  if (!CORS_ALLOWLIST || CORS_ALLOWLIST.length === 0) {
+    if (origin) res.header('Access-Control-Allow-Origin', origin);
+  } else if (origin && CORS_ALLOWLIST.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
 
-    // Exact match allowlist
-    if (CORS_ALLOWLIST.includes(origin)) return cb(null, true);
+  // Basic CORS headers for all requests
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-    return cb(new Error(`Origin ${origin} not allowed by CORS`));
-  },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: false,
-  optionsSuccessStatus: 204,
-};
+  // Handle preflight directly
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
 
-app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions)); // ✅ preflight for everything
+  next();
+});
+// --- END CORS ---
 
-
-// JSON parser AFTER CORS is fine too (preflight has no body)
-app.use(express.json());
-
-// ---- Rate-limit the API (skip OPTIONS) ----
+// Rate-limit the API
 const limiter = rateLimit({
   windowMs: 60 * 1000,
   max: 120,
-  skip: (req) => req.method === 'OPTIONS',
 });
 app.use('/api/', limiter);
 
@@ -68,13 +63,5 @@ app.use('/api/jobs', jobsRoute);
 app.use('/api/sms', smsRoute);
 app.use('/api/transit', transitRoute);
 app.use('/api/chat', chatRoute);
-
-// ---- CORS error handler (so it doesn't hang) ----
-app.use((err, req, res, next) => {
-  if (err?.message?.includes('not allowed by CORS')) {
-    return res.status(403).json({ ok: false, error: err.message });
-  }
-  next(err);
-});
 
 export default app;
