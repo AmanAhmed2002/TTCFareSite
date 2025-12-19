@@ -62,6 +62,16 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
+app.use((req, res, next) => {
+  res.setTimeout(45000,() => {
+    if (!res.headersSent) {
+      res.status(504).json({ ok: false, error: "Server timed out (15s)" });
+    }
+  });
+  next();
+});
+
+
 // ---- Routes ----
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
