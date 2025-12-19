@@ -63,9 +63,9 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 app.use((req, res, next) => {
-  res.setTimeout(45000,() => {
+  res.setTimeout(35000, () => {
     if (!res.headersSent) {
-      res.status(504).json({ ok: false, error: "Server timed out (15s)" });
+      res.status(504).json({ ok: false, error: "Server timed out (35s)" });
     }
   });
   next();
