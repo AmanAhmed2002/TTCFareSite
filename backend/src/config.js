@@ -12,4 +12,5 @@ export const CORS_ALLOWLIST = (process.env.CORS_ALLOWLIST || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
+  
 
