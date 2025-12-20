@@ -338,9 +338,7 @@ router.get('/alerts', async (req, res) => {
 router.get('/lines', async (req, res) => {
   const agencyKey = normalizeAgency(req.query.agency || '');
   const stopRefRaw = String(req.query.stop_ref || '').trim();
-
-  // Cap window so it stays fast (dropdown doesn’t need full day)
-  const windowMin = Math.max(1, Math.min(Number(req.query.window || 60), 240));
+  const windowMin = Number(req.query.window || 60);
 
   if (!agencyKey) return res.status(400).json({ error: 'agency required (ttc)' });
   if (!stopRefRaw) return res.status(400).json({ error: 'stop_ref required' });
@@ -349,35 +347,21 @@ router.get('/lines', async (req, res) => {
     const exactId = /^[A-Za-z0-9_-]+$/.test(stopRefRaw) ? stopRefRaw : null;
     const candidates = [];
     if (exactId) candidates.push({ id: exactId, name: exactId });
-
     if (!exactId || /[A-Za-z]/.test(stopRefRaw)) {
       const more = await findCandidateStopIds(agencyKey, stopRefRaw, 10);
-      for (const c of more) {
-        if (!candidates.find(x => String(x.id) === String(c.id))) candidates.push(c);
-      }
+      for (const c of more) if (!candidates.find(x => String(x.id) === String(c.id))) candidates.push(c);
     }
-
     if (!candidates.length) return res.status(404).json({ error: 'Stop not found' });
 
     const first = candidates[0];
-
-    // Expand BUT cap stop IDs (prevents huge fan-out)
-    const stopIds = (await expandStopIds(agencyKey, first.id)).slice(0, 6);
+    const stopIds = await expandStopIds(agencyKey, first.id);
 
     const set = new Set();
-
     for (const sid of stopIds) {
-      try {
-        const lines = await linesAtStopWindow(agencyKey, sid, { windowMin });
-        for (const l of (lines || [])) set.add(String(l));
-      } catch {
-        // ignore a bad stopId / schedule error
-      }
+      const lines = await linesAtStopWindow(agencyKey, sid, { windowMin });
+      for (const l of lines) set.add(String(l));
     }
-
-    const routes = Array.from(set).sort((a, b) =>
-      String(a).localeCompare(String(b), undefined, { numeric: true })
-    );
+    const routes = Array.from(set).sort((a,b)=> String(a).localeCompare(String(b), undefined, { numeric: true }));
 
     return res.json({
       stopId: first.id,
@@ -387,12 +371,9 @@ router.get('/lines', async (req, res) => {
       routes,
       method: 'schedule+station-expansion',
     });
-  } catch (e) {
-    console.error('LINES ERROR:', e);
-    return res.status(500).json({ error: String(e?.message || e) });
+    res.status(500).json({ error: String(e?.message || e) });
   }
 });
-
 
 export default router;
 
