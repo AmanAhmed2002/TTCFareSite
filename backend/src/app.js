@@ -32,7 +32,7 @@ app.use(express.json());
 app.use(morgan('combined'));
 
 // CORS: allow local dev and your Vercel domain(s)
-const corsOptions = {
+/*const corsOptions = {
   origin(origin, cb) {
     if (!origin) return cb(null, true);
     if (CORS_ALLOWLIST.includes(origin)) return cb(null, true);
@@ -41,7 +41,7 @@ const corsOptions = {
   credentials: false
 };
 app.use(cors(corsOptions));
-
+*/
 app.use(cors());
 
 // Rate-limit the API

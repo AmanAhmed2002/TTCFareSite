@@ -371,6 +371,7 @@ router.get('/lines', async (req, res) => {
       routes,
       method: 'schedule+station-expansion',
     });
+  } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
 });
